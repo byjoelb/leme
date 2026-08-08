@@ -1082,6 +1082,11 @@ function load(){
     if(!S.lancamentos[i].comp)   S.lancamentos[i].comp='';
     if(!S.lancamentos[i].origem) S.lancamentos[i].origem='';
   }
+  // recebimentos vindos de estorno/desconto de fatura (importados antes da correção)
+  // não tinham origem marcada e por isso eram contados como dinheiro em conta.
+  for(var i=0;i<S.recebimentos.length;i++){
+    if(S.recebimentos[i].cat==='Estorno' && !S.recebimentos[i].origem) S.recebimentos[i].origem='cartao';
+  }
   Object.keys(S.rendas).forEach(function(k){
   });
 }
@@ -1160,7 +1165,7 @@ function setupYearSel(){
 // ═══════════════════════════════════════════════
 function getRendaMes(m,y){ return S.rendas[mKey(m,y)]||{bruto:0,ajuste:0}; }
 function getRecMes(m,y){ var k=mKey(m,y),arr=[]; for(var i=0;i<S.recebimentos.length;i++) if(S.recebimentos[i].mesKey===k) arr.push(S.recebimentos[i]); return arr; }
-function totRec(m,y,inclMovFin){ var a=getRecMes(m,y),t=0; for(var i=0;i<a.length;i++){ if(!inclMovFin && a[i].movFin==='sim') continue; t+=a[i].valor; } return t; }
+function totRec(m,y,inclMovFin){ var a=getRecMes(m,y),t=0; for(var i=0;i<a.length;i++){ if(!inclMovFin && a[i].movFin==='sim') continue; if(a[i].origem==='cartao') continue; t+=a[i].valor; } return t; }
 // ═══════════════════════════════════════════════
 // RENDA — duas definicoes, e so duas.
 //   REALIZADO = totRec(m,y)         -> recebimentos por competencia (mesKey)
@@ -2200,7 +2205,10 @@ function processImport(){
       // isSalario era lido por renderCreditTable e pelo auto-switch de aba, mas
       // nunca era escrito — o botao "+ Renda" jamais aparecia.
       var isSal=/REMUNERACAO|SALARIO|SALÁRIO|PROVENTOS|PENSAO|PENSÃO/i.test(desc);
-      pCredits.push({date:date,desc:desc,valor:valor,cat:catLabel,isSalario:isSal});
+      // créditos vindos de fatura (estorno, desconto de antecipação de parcela) são
+      // abatimento DENTRO da fatura do cartão — não é dinheiro que entrou na conta
+      // corrente. Marcar origem:'cartao' pra ficar de fora do saldo em conta e da renda.
+      pCredits.push({date:date,desc:desc,valor:valor,cat:catLabel,isSalario:isSal,origem:tipo==='cartao'?'cartao':''});
     } else {
       var smart=autoCatSmart(desc);
       var descUp=desc.toUpperCase();
@@ -2405,7 +2413,7 @@ function confirmImport(){
   for(var i=0;i<pCredits.length;i++){
     var x=pCredits[i]; if(!x.date) continue;
     var pd=new Date(x.date+'T00:00:00'), pmk=mKey(pd.getMonth(),pd.getFullYear());
-    S.recebimentos.push({id:uid(),mesKey:pmk,desc:x.desc,valor:x.valor,date:x.date,cat:x.cat||'Outros'});
+    S.recebimentos.push({id:uid(),mesKey:pmk,desc:x.desc,valor:x.valor,date:x.date,cat:x.cat||'Outros',origem:x.origem||''});
   }
   var nCred=pCredits.length;
   save(); closeModal('mImport');
@@ -2444,6 +2452,7 @@ function calcSaldoCC(m,y){
   var totRecebs=0;
   for(var i=0;i<S.recebimentos.length;i++){
     var r=S.recebimentos[i];
+    if(r.origem==='cartao') continue; // credito interno da fatura, nunca entrou na conta
     if(limite && r.date>limite) continue;
     totRecebs+=r.valor;
   }
@@ -2845,15 +2854,17 @@ function renderOrcEixo(){
 // Cada checagem devolve {titulo, ok, itens[], ajuda}. Nada escreve em S.
 // ═══════════════════════════════════════════════
 function diagDuplicatas(){
+  // inclui comp na chave: parcelamento (mesma data/valor/descrição todo mês,
+  // só a competência muda) é legítimo e não pode ser confundido com duplicata.
   var vis={}, dup=[];
   for(var i=0;i<S.lancamentos.length;i++){
     var l=S.lancamentos[i];
-    var k=l.date+'|'+l.valor.toFixed(2)+'|'+(l.desc||'').trim().toLowerCase().slice(0,24);
+    var k=l.date+'|'+l.valor.toFixed(2)+'|'+(l.desc||'').trim().toLowerCase().slice(0,24)+'|'+(l.comp||'');
     if(vis[k]) dup.push({txt:fmtD(l.date)+' · '+fmt(l.valor)+' · '+(l.desc||'').slice(0,42), val:l.valor});
     else vis[k]=1;
   }
   return {titulo:'Lançamentos duplicados', itens:dup,
-    ajuda:'Mesma data, mesmo valor e mesma descrição. Quase sempre é o mesmo extrato importado duas vezes.'};
+    ajuda:'Mesma data, mesmo valor, mesma descrição e mesma competência. Quase sempre é o mesmo extrato importado duas vezes.'};
 }
 function diagSaldoVsSnapshot(){
   var conta=null;
@@ -3865,6 +3876,9 @@ function fbLoadData(uid){
           if(!S.lancamentos) S.lancamentos=[];
           if(!S.limites) S.limites={};
           if(!S.categorias||!S.categorias.length) seedCats();
+          for(var mi=0;mi<S.recebimentos.length;mi++){
+            if(S.recebimentos[mi].cat==='Estorno' && !S.recebimentos[mi].origem) S.recebimentos[mi].origem='cartao';
+          }
           el('sLbl').textContent='Sincronizado ☁';
         } else {
           el('sLbl').textContent='Local mais recente';
